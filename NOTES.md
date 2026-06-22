@@ -119,7 +119,21 @@ it's in the repo.
 
 The endpoints, tests, and eval suite were run live against the real GitHub API and the
 real OpenAI model (`gpt-5.5`) — the example output in the README is genuine, not
-illustrative. The **Docker setup (`Dockerfile` / `docker-compose.yml`) is written to
-best practice but was not run on this machine** (no local Docker daemon), so treat the
-one-command container path as un-smoke-tested; the non-Docker quickstart is the
-verified path.
+illustrative. The **Docker path was verified too**: the image builds, `docker compose
+up` boots the service, the container healthcheck reports `healthy`, and the real
+collaboration endpoint serves data from inside the container. The same build +
+`/health` smoke test runs in CI on every push (see below).
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push / PR to `main`:
+
+1. **Lint + test + eval** — `ruff`, the full `pytest` suite, and the eval harness in
+   offline stub mode (no API keys needed — the stub provider stands in for the LLM).
+2. **Docker build + smoke test** — builds the image and boots the container with *no*
+   secrets, then polls `/health`. This doubles as a guarantee that the liveness path
+   never grows a hidden dependency on a key.
+
+The narrative endpoint's behaviour against a *real* model is checked locally with
+`python -m eval.run_eval --live` rather than in CI, to keep API keys out of the
+pipeline.

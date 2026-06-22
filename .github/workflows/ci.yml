@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint, test & eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check app eval tests
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Run eval suite (offline stub — no API keys needed)
+        run: python -m eval.run_eval
+
+  docker:
+    name: Build image & smoke-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t loop-insights:ci .
+
+      # Boot the container with no secrets; /health must not depend on any key.
+      - name: Run container
+        run: docker run -d --name loop -p 8000:8000 -e OPENAI_API_KEY= -e GITHUB_TOKEN= loop-insights:ci
+
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:8000/health; then
+              echo "healthy" && exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not become healthy" >&2
+          docker logs loop
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f loop
