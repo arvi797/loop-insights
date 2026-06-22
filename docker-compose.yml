@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    # Secrets come from .env (gitignored), never baked into the image.
+    env_file:
+      - .env
+    environment:
+      # Keep the SQLite store on a mounted volume so it survives restarts.
+      DATABASE_URL: sqlite:///./data/loop.db
+    volumes:
+      - loop-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  loop-data:
