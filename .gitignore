@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+
+# Local data store / caches
+*.db
+*.sqlite
+*.sqlite3
+data/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
