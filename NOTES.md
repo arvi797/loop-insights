@@ -26,22 +26,33 @@ api/        thin HTTP layer (FastAPI): validate input, call service, serialise
 service     orchestration: GitHub fetch -> metrics, caching, input validation
 github/     async REST client (pagination, rate-limit handling, retries)
 metrics/    pure functions over raw payloads -> the report (deterministic, unit-tested)
-llm/        provider abstraction (OpenAI/Gemini) + narrative + grounding validator
+llm/        provider seam (OpenAI/Gemini) + narrative writer + judge + grounding
 store/      SQLite cache keyed by (repo, window) with a TTL
 eval/       offline + live evaluation suite for the narrative
 ```
 
-**The decision I care most about is how the narrative is grounded.** An LLM
+**The decision I care most about is how the narrative is made trustworthy.** An LLM
 narrative over numbers is only useful if you can trust it, so the model's output is
-never taken at face value. The flow is: compute the metrics → hand the LLM *only*
-those numbers and ask for structured JSON → **validate every cited figure against
-the source metrics** (`llm/grounding.py`). If the model invents a number, `grounded`
-is set to `false`, the discrepancy is reported in `grounding_warnings`, and
-confidence is penalised. Separately, the model's self-reported confidence is **capped
-by a deterministic signal-strength score** derived from the data's volume and how
-clear the bottleneck signal is — so a model can't sound 95%-sure about a 3-PR window.
-The prompt *asks* for good behaviour; the validator *enforces* it. That separation is
-the point.
+never taken at face value — and the model is never asked how confident it is, because
+self-reported LLM confidence is uncalibrated. Instead there are **two grounding
+layers plus a computed confidence** (`llm/grounding.py`, `llm/judge.py`):
+
+1. **Numeric grounding (deterministic).** Every number the model cites in `evidence`
+   must match a source metric exactly. A fabricated figure sets `grounded=false` and
+   is reported in `grounding_warnings`. This is exact, free, and unit-tested — the
+   right tool for verifying *numbers*.
+2. **Faithfulness judge (LLM-as-judge).** Numeric grounding is blind to prose that
+   cites real numbers but overreaches — e.g. "reviews are slow *because the team is
+   understaffed*" (staffing isn't in the data). A second LLM reads the prose plus the
+   real metrics and scores faithfulness 1–5, flagging unsupported claims. It runs on a
+   **different model from the writer** (`gpt-4.1` judging `gpt-5.5` by default) so it
+   isn't grading its own output. A discrete 1–5 rubric is used deliberately — LLMs
+   rate far more consistently on an anchored scale than on a raw 0–1 float.
+3. **Computed confidence.** `confidence` is derived by the system from the data's
+   signal strength (volume × how clear the bottleneck signal is), then penalised for a
+   fabricated number (0.5×) and scaled by the judge's faithfulness (score/5). So a
+   model can't sound 95%-sure about a 3-PR window, and a fluent-but-unfounded story
+   can't score high. The prompt *asks* for good behaviour; the two layers *enforce* it.
 
 **Other decisions.** Metrics are pure functions over already-fetched payloads, which
 is what lets the tests and eval suite assert the numbers add up without hitting
@@ -52,16 +63,18 @@ hits visible. Input is validated at the service boundary: the `repo` value is ma
 against an anchored regex so a crafted value can't become a path-traversal / SSRF
 vector, and the window is bounded.
 
-**LLM provider & structured output.** Both OpenAI and Gemini are driven through a
-one-method `LLMProvider` seam and asked for structured output using the Pydantic
-model directly (`NarrativeDraft`) — OpenAI via `chat.completions.parse`, Gemini via
-`response_schema` — so there's no hand-written JSON schema to drift. The model output
-schema (`NarrativeDraft`) is deliberately separate from the validated `Narrative`, so
-the LLM is never asked to self-report its own grounding verdict; the validator sets
-that. The default model is `gpt-5.5` (best instruction-following for the grounding +
-calibration task); it's one env var to switch to `gpt-4.1` if latency matters.
-Reasoning models pin `temperature`, so the provider omits the parameter for the
-`gpt-5.x` / o-series families rather than sending a value they'd reject.
+**LLM provider & structured output.** OpenAI and Gemini sit behind one `LLMProvider`
+seam (`draft_narrative` + `judge_faithfulness`), both asked for structured output
+using the Pydantic model directly — OpenAI via `chat.completions.parse`, Gemini via
+`response_schema` — so there's no hand-written JSON schema to drift. The writer's
+output schema (`NarrativeDraft`, no confidence field) is deliberately separate from
+the validated `Narrative`, so the model is never asked for its own grounding verdict
+or confidence; the system sets those. Writer defaults to `gpt-5.5` (best
+instruction-following), judge to `gpt-4.1` (`JUDGE_MODEL`) — distinct models so the
+judge isn't self-grading; point `JUDGE_MODEL` at a non-OpenAI model for a fully
+cross-family check. Reasoning models pin `temperature`, so the provider omits the
+parameter for the `gpt-5.x` / o-series families rather than sending a value they'd
+reject. Both narrative endpoints fail fast with `503` if their model's key is absent.
 
 **Coverage / truncation.** Upstream fan-out is bounded by `MAX_PULLS_INSPECTED`. When
 the window holds more PRs than the cap, the report sets `truncated=true` and reports
@@ -83,8 +96,11 @@ complete one — the kind of silent truncation that quietly corrupts a metric.
 - **A second integration (GitLab)** behind the same metrics interface, to prove the
   boundary. The `RepoRef` → report flow is provider-agnostic by design.
 - **A small React page** with a date-range picker and the two tables.
-- **Richer eval**: a faithfulness check using an LLM-as-judge on the prose summary,
-  not just the numeric evidence chain.
+- **Calibrate the confidence weights** (the ÷50 volume scale, the 50/50 split) against
+  labelled outcomes; today they're transparent, defensible heuristics, not fitted.
+- **A judge eval set** — a handful of deliberately-overreaching narratives with known
+  verdicts, run against the judge to catch prompt regressions (the judge is itself an
+  LLM, so it deserves its own regression net).
 
 ## 4. What I used AI for
 
@@ -101,9 +117,16 @@ are worth calling out because they're the kind of thing that slips through:
 2. The **signal-strength** score initially let a 1-of-1 unreviewed merge read as a
    100% bottleneck signal — the eval suite caught it; fixed by gating the bottleneck
    term by data volume, so a ratio over tiny N can't masquerade as a strong signal.
+3. The **faithfulness judge** initially flagged legitimate, metric-grounded
+   hypotheses as "unsupported" — penalising the narrative for producing the very
+   root-cause hypothesis the task asks for. A live run across several repos surfaced
+   the inconsistency (equivalent hypotheses scored 5/5 on one repo, flagged on
+   another); fixed by teaching the judge prompt to distinguish a *fabricated fact or
+   cause* (flag) from a *hedged hypothesis tied to a real metric* (allow), then
+   re-verifying it still catches genuine overreach.
 
-Both are in the git history. The eval suite catching the second one is exactly why
-it's in the repo.
+All three are in the git history. Catching #3 only by actually running the pipeline
+end-to-end — not by reading the code — is the reason the live eval matters.
 
 ## Things I deliberately did *not* do
 
@@ -117,12 +140,15 @@ it's in the repo.
 
 ## A note on verification
 
-The endpoints, tests, and eval suite were run live against the real GitHub API and the
-real OpenAI model (`gpt-5.5`) — the example output in the README is genuine, not
-illustrative. The **Docker path was verified too**: the image builds, `docker compose
-up` boots the service, the container healthcheck reports `healthy`, and the real
-collaboration endpoint serves data from inside the container. The same build +
-`/health` smoke test runs in CI on every push (see below).
+The endpoints, tests, and eval suite were run live end-to-end against the real GitHub
+API with the real models (writer `gpt-5.5`, judge `gpt-4.1`) across several repos of
+different shapes — healthy, bottlenecked, truncated, and empty — to confirm the
+confidence scores track the data and the judge flags overreach without flagging valid
+hypotheses. The README example is genuine output, not illustrative. The **Docker path
+was verified too**: the image builds, `docker compose up` boots the service, the
+container healthcheck reports `healthy`, and the real collaboration endpoint serves
+data from inside the container. The same build + `/health` smoke test runs in CI on
+every push (see below).
 
 ## CI
 
