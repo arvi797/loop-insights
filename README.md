@@ -1,5 +1,7 @@
 # Loop Insights
 
+[![CI](https://github.com/arvi797/loop-insights/actions/workflows/ci.yml/badge.svg)](https://github.com/arvi797/loop-insights/actions/workflows/ci.yml)
+
 A small service that reads collaboration data from the **GitHub API** and surfaces
 insights over a time period, including an **LLM-synthesized narrative** with a
 root-cause hypothesis, a confidence score, and an evidence chain that traces every
@@ -106,12 +108,12 @@ the output against the source metrics:
 }
 ```
 
-(Real `gpt-5.5` output over the numbers above. `confidence` and `grounded` are set by the
-service's validator, not the model — see NOTES.)
+(Real `gpt-5.5` output over the numbers above. `confidence`, `grounded`, and
+`grounding_warnings` are set by the service's validator — not the model — by checking
+every cited figure against the source metrics; see NOTES.)
 
-`grounded` and `grounding_warnings` are set by the service, not the model — see
-NOTES. Requires `OPENAI_API_KEY` (or `GOOGLE_API_KEY` with `LLM_PROVIDER=gemini`);
-returns `503` if no key is configured.
+Requires `OPENAI_API_KEY` (or `GOOGLE_API_KEY` with `LLM_PROVIDER=gemini`); returns
+`503` if no key is configured.
 
 ---
 
