@@ -2,6 +2,12 @@
 
 [![CI](https://github.com/arvi797/loop-insights/actions/workflows/ci.yml/badge.svg)](https://github.com/arvi797/loop-insights/actions/workflows/ci.yml)
 
+**Point it at any public GitHub repo and a time window, and it tells you how that
+team is collaborating** — who carries the load, whether reviews bottleneck on one
+person, how long PRs take, and what's merging unreviewed — then has an LLM explain the
+pattern in plain English. Think of it as a team-health read for an engineering lead,
+without trawling a dashboard.
+
 A small service that reads collaboration data from the **GitHub API** and surfaces
 insights over a time period, including an **LLM-synthesized narrative** with a
 root-cause hypothesis, a confidence score, and an evidence chain that traces every
@@ -33,8 +39,9 @@ uv pip install -e ".[dev]"
 #    pip install -r requirements.txt
 
 # 2. Configure
-cp .env.example .env          # works as-is for the collaboration endpoint
+cp .env.example .env          # works as-is for the collaboration endpoint.
                               # add OPENAI_API_KEY to enable the narrative endpoint
+                              # (the same key powers the writer and the judge model).
 
 # 3. Run
 uvicorn app.api.main:app --reload
