@@ -110,21 +110,34 @@ class LLMNotConfiguredError(RuntimeError):
     """Raised when the narrative endpoint is called without a usable LLM key."""
 
 
-def build_provider(settings: Settings) -> LLMProvider:
+def _build(settings: Settings, model: str) -> LLMProvider:
+    """Construct the configured provider pointed at a specific model."""
     if settings.llm_provider == "openai":
         if not settings.openai_api_key:
             raise LLMNotConfiguredError(
                 "LLM_PROVIDER=openai but OPENAI_API_KEY is not set."
             )
-        return OpenAIProvider(
-            settings.openai_api_key, settings.openai_model, settings.llm_temperature
-        )
+        return OpenAIProvider(settings.openai_api_key, model, settings.llm_temperature)
     if settings.llm_provider == "gemini":
         if not settings.google_api_key:
             raise LLMNotConfiguredError(
                 "LLM_PROVIDER=gemini but GOOGLE_API_KEY is not set."
             )
-        return GeminiProvider(
-            settings.google_api_key, settings.gemini_model, settings.llm_temperature
-        )
+        return GeminiProvider(settings.google_api_key, model, settings.llm_temperature)
     raise LLMNotConfiguredError(f"Unknown LLM_PROVIDER: {settings.llm_provider}")
+
+
+def build_provider(settings: Settings) -> LLMProvider:
+    """Provider for writing the narrative (settings.openai_model / gemini_model)."""
+    model = (
+        settings.openai_model
+        if settings.llm_provider == "openai"
+        else settings.gemini_model
+    )
+    return _build(settings, model)
+
+
+def build_judge_provider(settings: Settings) -> LLMProvider:
+    """Provider for the faithfulness judge — a different model from the writer, so it
+    isn't grading its own output (settings.judge_model)."""
+    return _build(settings, settings.judge_model)

@@ -18,7 +18,11 @@ from fastapi.responses import JSONResponse
 from app.config import Settings, get_settings
 from app.github.client import GitHubClient, GitHubError, RateLimitError
 from app.llm.narrative import synthesize_narrative
-from app.llm.provider import LLMNotConfiguredError, build_provider
+from app.llm.provider import (
+    LLMNotConfiguredError,
+    build_judge_provider,
+    build_provider,
+)
 from app.models import CollaborationHealth, Narrative
 from app.service import (
     InsightService,
@@ -135,10 +139,17 @@ async def narrative_insight(
     repo_ref = parse_repo(repo or settings.default_repo)
     start, end = resolve_window(days, period_start, period_end)
 
-    # Build the provider eagerly so a missing key fails fast (503) before any work.
+    # Build providers eagerly so a missing key fails fast (503) before any work.
+    # The judge runs on a separate model from the writer (see build_judge_provider).
     provider = build_provider(settings)
+    judge_provider = build_judge_provider(settings)
     narrative, cache_hit = await service.get_narrative(
-        repo_ref, start, end, lambda health: synthesize_narrative(provider, health)
+        repo_ref,
+        start,
+        end,
+        lambda health: synthesize_narrative(
+            provider, health, judge_provider=judge_provider
+        ),
     )
     response.headers["X-Cache"] = "HIT" if cache_hit else "MISS"
     return narrative

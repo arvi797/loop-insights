@@ -22,10 +22,14 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: Literal["openai", "gemini"] = "openai"
     openai_api_key: str | None = None
-    # gpt-5.5: strongest reasoning/instruction-following for the grounding +
-    # calibration task. Slower than gpt-4.1; swap back via OPENAI_MODEL if latency
-    # matters for the demo. Structured outputs supported.
+    # gpt-5.5: strongest reasoning/instruction-following for writing the narrative.
+    # Slower than gpt-4.1; swap via OPENAI_MODEL if latency matters. Structured
+    # outputs supported.
     openai_model: str = "gpt-5.5"
+    # The faithfulness judge runs on a DIFFERENT model from the writer, so it isn't
+    # grading its own output. Default gpt-4.1 (same provider, distinct model). For a
+    # fully independent cross-family check, point this at a non-OpenAI model.
+    judge_model: str = "gpt-4.1"
     google_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
     # Low temperature: the narrative should be stable and faithful, not creative.

@@ -66,13 +66,19 @@ def _metrics_payload(health: CollaborationHealth) -> str:
 
 
 async def synthesize_narrative(
-    provider: LLMProvider, health: CollaborationHealth, *, judge: bool = True
+    provider: LLMProvider,
+    health: CollaborationHealth,
+    *,
+    judge_provider: LLMProvider | None = None,
 ) -> Narrative:
     """Draft the narrative, optionally run the faithfulness judge, then validate.
 
     Two layers of trust: the deterministic grounding check on the evidence numbers
-    (always), and the LLM judge on the prose (when `judge` is on). Confidence is then
-    computed by the system from data signal + both checks.
+    (always), and the LLM judge on the prose (when `judge_provider` is given).
+    Confidence is then computed by the system from data signal + both checks.
+
+    The judge runs on its own provider/model — a different model from the writer, so
+    it isn't grading its own output. Pass `judge_provider=None` to skip the judge.
     """
     user_prompt = (
         "Here are the collaboration metrics. Write the narrative.\n\n"
@@ -80,5 +86,9 @@ async def synthesize_narrative(
     )
     draft = await provider.draft_narrative(SYSTEM_PROMPT, user_prompt)
 
-    verdict = await judge_faithfulness(provider, draft, health) if judge else None
+    verdict = (
+        await judge_faithfulness(judge_provider, draft, health)
+        if judge_provider is not None
+        else None
+    )
     return validate_grounding(draft, health, verdict)

@@ -79,7 +79,10 @@ class StubProvider:
 
 
 async def _synthesize(provider, health: CollaborationHealth) -> Narrative:
-    return await synthesize_narrative(provider, health)
+    # Use the same provider as its own judge in the eval (the stub is faithful by
+    # construction; --live exercises the real model judging itself, which is still a
+    # useful smoke test of the judge path even though prod uses a separate model).
+    return await synthesize_narrative(provider, health, judge_provider=provider)
 
 
 def _check(case: EvalCase, narrative: Narrative) -> list[str]:
