@@ -1,16 +1,29 @@
 """Grounding validation for the LLM narrative.
 
 The narrative endpoint's whole value rests on trust: a root-cause story is only
-useful if its numbers are real. Rather than trust the model's self-reported
-confidence, we independently verify the output against the source metrics and
-reconcile confidence with a deterministic signal-strength score.
+useful if its numbers are real and its prose doesn't overreach. We never ask the
+model how confident it is (that signal is uncalibrated). Instead:
 
-This is the piece that turns "an LLM call" into "a grounded, auditable insight".
+  * numeric grounding — every number cited in the evidence chain must match a source
+    metric (deterministic, exact);
+  * the confidence score is COMPUTED from the data's signal strength, then penalised
+    for a fabricated number or for unfaithful prose (the latter via the LLM judge's
+    1–5 faithfulness score — see judge.py).
+
+Numeric grounding alone is blind to omission (citing no number) and irrelevance (a
+real number that doesn't support the claim); the judge and the data-derived
+confidence are what cover those gaps. This is the piece that turns "an LLM call" into
+a grounded, auditable insight.
 """
 
 from __future__ import annotations
 
-from app.models import CollaborationHealth, Narrative, NarrativeDraft
+from app.models import (
+    CollaborationHealth,
+    FaithfulnessVerdict,
+    Narrative,
+    NarrativeDraft,
+)
 
 
 def collect_source_values(health: CollaborationHealth) -> dict[str, float]:
@@ -52,39 +65,55 @@ def _matches_any(value: float, source: dict[str, float], tol: float = 0.01) -> b
 
 
 def validate_grounding(
-    draft: NarrativeDraft, health: CollaborationHealth
+    draft: NarrativeDraft,
+    health: CollaborationHealth,
+    faithfulness: FaithfulnessVerdict | None = None,
 ) -> Narrative:
     """Promote an LLM draft to a validated Narrative.
 
-    Checks each evidence item against the source metrics, flags fabrications, and
-    reconciles the draft's confidence with the data's actual signal strength.
+    Checks each evidence number against the source metrics, folds in the optional
+    prose-faithfulness verdict, and computes a confidence the system stands behind —
+    the narrating model is never asked for its own confidence.
     """
     source = collect_source_values(health)
-    warnings: list[str] = []
 
+    # Track numeric-grounding failures explicitly (not by re-parsing warning text), so
+    # the confidence logic can't silently break if a warning message is reworded.
+    numeric_warnings: list[str] = []
     for item in draft.evidence:
         numeric = _as_number(item.value)
         if numeric is None:
             continue  # qualitative evidence — nothing numeric to verify
         if not _matches_any(numeric, source):
-            warnings.append(
+            numeric_warnings.append(
                 f"Evidence cites {item.metric}={item.value}, which does not match "
                 "any value in the source metrics."
             )
-
     if not draft.evidence:
-        warnings.append("Narrative provided no evidence chain.")
+        numeric_warnings.append("Narrative provided no evidence chain.")
 
-    grounded = len(warnings) == 0
-    confidence = _reconcile_confidence(draft.confidence, health, grounded)
+    # The judge's unsupported-prose findings are warnings too, but they don't flip the
+    # numeric-grounding flag — they feed confidence via the faithfulness score instead.
+    prose_warnings: list[str] = []
+    if faithfulness is not None:
+        prose_warnings = [
+            f"Unsupported prose claim: {c.claim} ({c.reason})"
+            for c in faithfulness.claims
+            if not c.supported
+        ]
+
+    warnings = numeric_warnings + prose_warnings
+    numerically_grounded = not numeric_warnings
+    confidence = compute_confidence(health, numerically_grounded, faithfulness)
 
     return Narrative(
         summary=draft.summary,
         root_cause_hypothesis=draft.root_cause_hypothesis,
         confidence=confidence,
         evidence=draft.evidence,
-        grounded=grounded,
+        grounded=len(warnings) == 0,
         grounding_warnings=warnings,
+        faithfulness=faithfulness.score if faithfulness else None,
     )
 
 
@@ -109,19 +138,25 @@ def signal_strength(health: CollaborationHealth) -> float:
     return round(0.5 * volume + 0.5 * bottleneck, 3)
 
 
-def _reconcile_confidence(
-    model_confidence: float, health: CollaborationHealth, grounded: bool
+def compute_confidence(
+    health: CollaborationHealth,
+    numerically_grounded: bool,
+    faithfulness: FaithfulnessVerdict | None = None,
 ) -> float:
-    """Cap the model's confidence at what the evidence supports; penalise if ungrounded.
+    """Confidence the SYSTEM stands behind — never the model's self-report.
 
-    No artificial floor: if the data is thin (low signal strength), low confidence is
-    the honest answer, even if the model sounded sure.
+    Starts from how strongly the data supports a claim (signal_strength), then applies
+    penalties for the two ways a narrative can be untrustworthy:
+      * a fabricated number in the evidence chain (hard 0.5x penalty), and
+      * unfaithful prose, scaled by the judge's 1–5 score (5 -> 1.0x ... 1 -> 0.2x).
+    An LLM's own confidence is uncalibrated, so it is deliberately not an input.
     """
-    ceiling = signal_strength(health)
-    reconciled = min(model_confidence, ceiling)
-    if not grounded:
-        reconciled *= 0.5
-    return round(reconciled, 3)
+    confidence = signal_strength(health)
+    if not numerically_grounded:
+        confidence *= 0.5
+    if faithfulness is not None:
+        confidence *= faithfulness.score / 5.0  # 1–5 rubric -> 0.2 .. 1.0 multiplier
+    return round(confidence, 3)
 
 
 def _as_number(value: float | int | str) -> float | None:

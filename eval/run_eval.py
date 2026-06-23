@@ -21,16 +21,23 @@ from app.config import get_settings
 from app.llm.grounding import signal_strength
 from app.llm.narrative import synthesize_narrative
 from app.llm.provider import build_provider
-from app.models import CollaborationHealth, EvidenceItem, Narrative, NarrativeDraft
+from app.models import (
+    CollaborationHealth,
+    EvidenceItem,
+    FaithfulnessVerdict,
+    Narrative,
+    NarrativeDraft,
+)
 from eval.cases import CASES, EvalCase
 
 
 class StubProvider:
     """A deterministic 'model' that cites real numbers from the metrics.
 
-    It mimics a well-behaved LLM: surfaces the busiest reviewer when concentration
-    is high, proposes a bottleneck hypothesis, and self-reports high confidence
-    (which the grounding layer then reconciles down for thin data).
+    Mimics a well-behaved LLM: surfaces the busiest reviewer when concentration is
+    high and proposes a bottleneck hypothesis, citing only numbers from the data.
+    The judge stub returns a perfect faithfulness score, so the offline suite
+    exercises the data-derived confidence path without spending tokens.
     """
 
     async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
@@ -60,13 +67,15 @@ class StubProvider:
             )
             hypothesis = f"{busiest} is a review bottleneck."
             summary = f"Reviews are concentrated on {busiest}."
-        # self-reported confidence is deliberately high; grounding caps it.
         return NarrativeDraft(
             summary=summary,
             root_cause_hypothesis=hypothesis,
-            confidence=0.9,
             evidence=evidence,
         )
+
+    async def judge_faithfulness(self, system: str, user: str) -> FaithfulnessVerdict:
+        # The stub narrative only cites real metrics, so it is faithful by construction.
+        return FaithfulnessVerdict(score=5, claims=[])
 
 
 async def _synthesize(provider, health: CollaborationHealth) -> Narrative:

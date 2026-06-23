@@ -1,22 +1,31 @@
 """LLM provider abstraction.
 
 A thin seam over OpenAI and Gemini so the narrative logic doesn't care which model
-is configured, and so the eval harness can swap a fake provider in. Both real
-providers are asked for structured output matching the NarrativeDraft schema, which
-is derived directly from the Pydantic model (no hand-maintained schema to drift).
+is configured, and so the eval harness can swap a fake provider in. Every call asks
+for structured output using a Pydantic model directly as the schema (no
+hand-maintained JSON schema to drift): NarrativeDraft for the narrative, and
+FaithfulnessVerdict for the judge.
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+from pydantic import BaseModel
 
 from app.config import Settings
-from app.models import NarrativeDraft
+from app.models import FaithfulnessVerdict, NarrativeDraft
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class LLMProvider(Protocol):
     async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
-        """Return a structured narrative draft. Implementations enforce the schema."""
+        """Return a structured narrative draft."""
+        ...
+
+    async def judge_faithfulness(self, system: str, user: str) -> FaithfulnessVerdict:
+        """Return a structured 1–5 faithfulness verdict on a narrative."""
         ...
 
 
@@ -28,7 +37,7 @@ class OpenAIProvider:
         self._model = model
         self._temperature = temperature
 
-    async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
+    async def _structured(self, system: str, user: str, schema: type[T]) -> T:
         # .parse() uses OpenAI structured outputs (strict json_schema derived from the
         # Pydantic model) and returns a parsed instance — schema enforced at decode.
         kwargs: dict = {
@@ -37,7 +46,7 @@ class OpenAIProvider:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "response_format": NarrativeDraft,
+            "response_format": schema,
         }
         # Reasoning models (gpt-5.x) only allow the default temperature and reject an
         # explicit value. Send it for models that accept it; otherwise omit it.
@@ -47,8 +56,14 @@ class OpenAIProvider:
         resp = await self._client.chat.completions.parse(**kwargs)
         parsed = resp.choices[0].message.parsed
         if parsed is None:  # model refused or produced no parseable content
-            raise ValueError("OpenAI returned no parseable narrative.")
+            raise ValueError(f"OpenAI returned no parseable {schema.__name__}.")
         return parsed
+
+    async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
+        return await self._structured(system, user, NarrativeDraft)
+
+    async def judge_faithfulness(self, system: str, user: str) -> FaithfulnessVerdict:
+        return await self._structured(system, user, FaithfulnessVerdict)
 
     def _is_fixed_temperature_model(self) -> bool:
         """gpt-5.x and o-series reasoning models pin temperature to its default."""
@@ -64,17 +79,17 @@ class GeminiProvider:
         self._model = model
         self._temperature = temperature
 
-    async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
+    async def _structured(self, system: str, user: str, schema: type[T]) -> T:
         from google.genai import types
 
         # Gemini enforces the schema at decode via response_schema; passing the
-        # Pydantic model directly keeps it in sync with OpenAI and the validator.
+        # Pydantic model directly keeps it in sync with the rest of the pipeline.
         resp = await self._client.aio.models.generate_content(
             model=self._model,
             contents=f"{system}\n\n{user}",
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=NarrativeDraft,
+                response_schema=schema,
                 temperature=self._temperature,
             ),
         )
@@ -82,7 +97,13 @@ class GeminiProvider:
         # validating the raw JSON text if `parsed` is unavailable.
         if getattr(resp, "parsed", None) is not None:
             return resp.parsed
-        return NarrativeDraft.model_validate_json(resp.text or "{}")
+        return schema.model_validate_json(resp.text or "{}")
+
+    async def draft_narrative(self, system: str, user: str) -> NarrativeDraft:
+        return await self._structured(system, user, NarrativeDraft)
+
+    async def judge_faithfulness(self, system: str, user: str) -> FaithfulnessVerdict:
+        return await self._structured(system, user, FaithfulnessVerdict)
 
 
 class LLMNotConfiguredError(RuntimeError):

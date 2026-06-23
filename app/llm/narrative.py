@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 from app.llm.grounding import collect_source_values, validate_grounding
+from app.llm.judge import judge_faithfulness
 from app.llm.provider import LLMProvider
 from app.models import CollaborationHealth, Narrative
 
@@ -26,21 +27,21 @@ trends that are not in the data.
 - Every number you mention in `evidence` must be copied exactly from the metrics.
 - The main quantitative claim in your `summary` MUST also appear as an item in \
 `evidence`. Don't headline a number you don't back up.
-- If the data is thin or the signal is weak, say so and lower your confidence.
+- Do not assert causes the data can't show (e.g. WHY reviews are slow). Describe what \
+the metrics show; only hypothesise a cause a metric directly supports.
 - If `truncated` is true, the totals are a LOWER BOUND over only the most recent \
-`pulls_analyzed` merged PRs, not the full window. Say so explicitly and lower your \
-confidence accordingly — do not present capped totals as complete.
+`pulls_analyzed` merged PRs, not the full window. Say so explicitly — do not present \
+capped totals as complete.
 - Offer a root-cause hypothesis ONLY when a metric supports it (e.g. high \
 review_concentration or many unreviewed_merges suggests a review bottleneck). \
 If nothing supports a hypothesis, set root_cause_hypothesis to null.
-- `confidence` (0..1) must reflect how strongly the data supports your claims, not \
-how confident you sound.
+
+Do NOT report a confidence score — the system computes that separately.
 
 Return strict JSON with this shape:
 {
   "summary": "2-4 sentences on what stands out",
   "root_cause_hypothesis": "one sentence, or null",
-  "confidence": 0.0,
   "evidence": [{"metric": "metric_name", "value": <number from data>, "detail": "what it shows"}]
 }
 """
@@ -65,13 +66,19 @@ def _metrics_payload(health: CollaborationHealth) -> str:
 
 
 async def synthesize_narrative(
-    provider: LLMProvider, health: CollaborationHealth
+    provider: LLMProvider, health: CollaborationHealth, *, judge: bool = True
 ) -> Narrative:
+    """Draft the narrative, optionally run the faithfulness judge, then validate.
+
+    Two layers of trust: the deterministic grounding check on the evidence numbers
+    (always), and the LLM judge on the prose (when `judge` is on). Confidence is then
+    computed by the system from data signal + both checks.
+    """
     user_prompt = (
         "Here are the collaboration metrics. Write the narrative.\n\n"
         + _metrics_payload(health)
     )
-    # The provider returns a schema-enforced draft (structured output). The grounding
-    # validator then promotes it to a Narrative with verified grounding metadata.
     draft = await provider.draft_narrative(SYSTEM_PROMPT, user_prompt)
-    return validate_grounding(draft, health)
+
+    verdict = await judge_faithfulness(provider, draft, health) if judge else None
+    return validate_grounding(draft, health, verdict)

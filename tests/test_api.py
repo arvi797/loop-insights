@@ -14,7 +14,7 @@ from app.api.main import app, get_app_settings, get_service
 from app.config import Settings
 from app.github.client import GitHubClient
 from app.llm.provider import OpenAIProvider
-from app.models import EvidenceItem, NarrativeDraft
+from app.models import EvidenceItem, FaithfulnessVerdict, NarrativeDraft
 from app.service import InsightService
 from app.store.cache import InsightCache
 
@@ -103,11 +103,14 @@ def test_narrative_with_fake_llm(client, monkeypatch):
         return NarrativeDraft(
             summary="Bob did the only review.",
             root_cause_hypothesis=None,
-            confidence=0.9,
             evidence=[EvidenceItem(metric="total_reviews", value=1, detail="one review")],
         )
 
+    async def fake_judge(self, system, user):
+        return FaithfulnessVerdict(score=5, claims=[])
+
     monkeypatch.setattr(OpenAIProvider, "draft_narrative", fake_draft)
+    monkeypatch.setattr(OpenAIProvider, "judge_faithfulness", fake_judge)
     monkeypatch.setattr(OpenAIProvider, "__init__", lambda self, *a, **k: None)
 
     params = {
@@ -120,5 +123,6 @@ def test_narrative_with_fake_llm(client, monkeypatch):
     body = r.json()
     assert body["grounded"] is True
     assert body["evidence"][0]["metric"] == "total_reviews"
-    # confidence capped by signal strength (thin data) below the model's 0.9
-    assert body["confidence"] <= 0.9
+    # thin data -> system-computed confidence is low regardless of a perfect judge score
+    assert body["confidence"] <= 0.5
+    assert body["faithfulness"] == 5

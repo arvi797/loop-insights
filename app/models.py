@@ -88,23 +88,45 @@ class EvidenceItem(BaseModel):
 class NarrativeDraft(BaseModel):
     """The narrative as produced by the LLM — exactly the fields the model fills.
 
-    This is what we hand the provider as its output schema. Keeping it separate from
-    Narrative means the model is never asked to self-report its own grounding verdict;
-    that is set downstream by the validator.
+    Deliberately has NO confidence field: an LLM's self-reported confidence is
+    uncalibrated, so confidence is computed by the system (see compute_confidence),
+    not asked of the model. The model only narrates; the system scores.
     """
 
     summary: str
     root_cause_hypothesis: str | None = None
-    confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[EvidenceItem] = Field(default_factory=list)
 
 
-class Narrative(NarrativeDraft):
-    """A validated narrative: the LLM draft plus grounding metadata.
+class ClaimCheck(BaseModel):
+    """One judged claim from the prose summary/hypothesis."""
 
-    `grounded` and `grounding_warnings` are set by the grounding validator, not the
-    model — they record whether every cited figure traces back to the source metrics.
+    claim: str = Field(description="The specific claim, quoted from the narrative.")
+    supported: bool = Field(description="Whether the metrics support this claim.")
+    reason: str = Field(description="Why it is or isn't supported, in one phrase.")
+
+
+class FaithfulnessVerdict(BaseModel):
+    """An LLM judge's assessment of how faithful the prose is to the metrics.
+
+    The score is a 1–5 Likert rating (discrete scale — LLMs rate far more
+    consistently on an anchored rubric than on a raw 0–1 float).
     """
 
+    score: int = Field(ge=1, le=5, description="1=unsupported claims, 5=fully grounded.")
+    claims: list[ClaimCheck] = Field(default_factory=list)
+
+
+class Narrative(NarrativeDraft):
+    """A validated narrative: the LLM draft plus system-computed trust metadata.
+
+    `confidence`, `grounded`, and `grounding_warnings` are all set downstream — never
+    by the narrating model. Confidence is derived from the data's signal strength,
+    numeric grounding, and (when available) the faithfulness judge.
+    """
+
+    confidence: float = Field(ge=0.0, le=1.0)
     grounded: bool = True
     grounding_warnings: list[str] = Field(default_factory=list)
+    # 1–5 faithfulness score from the LLM judge, if it ran (null if no judge).
+    faithfulness: int | None = None
