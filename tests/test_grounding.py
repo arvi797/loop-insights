@@ -67,6 +67,22 @@ def test_fabricated_number_is_flagged_and_confidence_penalised():
     assert result.confidence == round(signal_strength(health) * 0.5, 3)
 
 
+def test_value_real_elsewhere_but_wrong_for_named_metric_is_flagged():
+    # The collision case: 15 is a real value in the data (carol's review count), but
+    # it is NOT the value of median_hours_to_merge. Grounding must check the NAMED
+    # metric, not just "is this number real anywhere", or it rubber-stamps.
+    health = _health(review_load=[ReviewLoad(reviewer="carol", reviews=15)])
+    draft = NarrativeDraft(
+        summary="Median time to merge was 15 hours.",
+        evidence=[
+            EvidenceItem(metric="median_hours_to_merge", value=15, detail="median merge time"),
+        ],
+    )
+    result = validate_grounding(draft, health)
+    assert result.grounded is False
+    assert any("median_hours_to_merge" in w for w in result.grounding_warnings)
+
+
 def test_percent_form_of_ratio_is_accepted():
     health = _health()
     # Model expresses review_concentration 0.75 as "75" (percent) — should still ground.

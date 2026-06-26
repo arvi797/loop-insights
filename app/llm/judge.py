@@ -23,9 +23,15 @@ from app.llm.provider import LLMProvider
 from app.models import CollaborationHealth, FaithfulnessVerdict, NarrativeDraft
 
 JUDGE_SYSTEM_PROMPT = """\
-You are a skeptical fact-checker. You are given (1) a narrative written about a \
-GitHub repository's collaboration metrics, and (2) the actual metrics it should be \
-based on. Your job is to find claims the metrics do NOT support.
+You are a skeptical fact-checker. You are given a narrative about a GitHub repo's \
+collaboration metrics, the narrative's `evidence` pairings (metric, value, detail), \
+and the `actual_metrics`. Your job is to find claims the metrics do NOT support.
+
+Check the evidence pairings too, not just the prose. For each evidence item, the \
+`value` must match the named `metric` in actual_metrics, AND the `detail` text must \
+describe what that metric actually is. Flag "right number, wrong label/conclusion": \
+e.g. a value that is really someone's review count but is labelled or described as \
+"median hours to merge". This mislabelling is a failure even though the number is real.
 
 Be adversarial about FACTS, but fair about HYPOTHESES.
 
@@ -58,6 +64,12 @@ def _judge_payload(narrative: NarrativeDraft, health: CollaborationHealth) -> st
             "narrative": {
                 "summary": narrative.summary,
                 "root_cause_hypothesis": narrative.root_cause_hypothesis,
+                # The evidence pairings are included so the judge can catch a claim that
+                # cites a real number under the wrong label or draws the wrong
+                # conclusion from it ("right number, wrong story") — not just prose that
+                # invents facts. Numeric grounding checks the value; the judge checks
+                # that the value actually supports what the detail text claims.
+                "evidence": [e.model_dump() for e in narrative.evidence],
             },
             "actual_metrics": collect_source_values(health),
         },

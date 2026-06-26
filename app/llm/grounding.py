@@ -53,15 +53,29 @@ def collect_source_values(health: CollaborationHealth) -> dict[str, float]:
     return values
 
 
-def _matches_any(value: float, source: dict[str, float], tol: float = 0.01) -> bool:
-    """A cited numeric value is grounded if it equals some source figure.
+def _close(value: float, target: float, tol: float = 0.01) -> bool:
+    """True if value equals target, allowing for float rounding and a ratio cited as
+    a percent (e.g. 0.62 cited as 62)."""
+    return abs(value - target) <= tol or abs(value - round(target * 100, 2)) <= tol
 
-    Tolerance covers float rounding and the model expressing a ratio as a percent
-    (e.g. review_concentration 0.62 cited as 62)."""
-    candidates = set(source.values())
-    for v in list(candidates):
-        candidates.add(round(v * 100, 2))  # ratio -> percent
-    return any(abs(value - cand) <= tol for cand in candidates)
+
+def _matches_named_metric(
+    metric: str, value: float, source: dict[str, float], tol: float = 0.01
+) -> bool:
+    """Grounded only if the value matches the value of the metric the model NAMED.
+
+    This is the difference between "is this number real anywhere in the data" (which
+    collides constantly with small integers) and "does the metric this claim rests on
+    actually hold this value".
+
+    If the named metric exists, the value must match it. If it doesn't exist — either a
+    metric we don't track, or one that's null because there's no data for it (e.g.
+    median_hours_to_merge when nothing merged) — the claim is NOT grounded: citing a
+    figure for a metric the data doesn't have is exactly what we want to catch. The
+    prompt instructs the model to use our metric names, so an unknown name is a real
+    miss, not a labelling quibble.
+    """
+    return metric in source and _close(value, source[metric], tol)
 
 
 def validate_grounding(
@@ -84,10 +98,10 @@ def validate_grounding(
         numeric = _as_number(item.value)
         if numeric is None:
             continue  # qualitative evidence — nothing numeric to verify
-        if not _matches_any(numeric, source):
+        if not _matches_named_metric(item.metric, numeric, source):
             numeric_warnings.append(
                 f"Evidence cites {item.metric}={item.value}, which does not match "
-                "any value in the source metrics."
+                "that metric in the source data."
             )
     if not draft.evidence:
         numeric_warnings.append("Narrative provided no evidence chain.")
